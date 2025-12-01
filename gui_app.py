@@ -1,4 +1,5 @@
 import flet as ft
+from pathlib import Path
 from src.core import EidolonCore
 
 def main(page: ft.Page):
@@ -9,49 +10,58 @@ def main(page: ft.Page):
     page.window_height = 700
     page.padding = 20
 
-    # --- 2. Инициализация Ядра ---
-    core = EidolonCore()
+    # --- 2. Инициализация Ядра (Грузим дефолтный профиль Friend) ---
+    core = EidolonCore(profile_folder="Friend")
 
-    # --- 3. Элементы UI (Определяем заранее, чтобы менять их свойства) ---
+    # --- 3. Элементы UI ---
     
-    # Текстовые поля сайдбара (мы будем их обновлять при смене режима)
-    sidebar_name = ft.Text(f"👁️ {core.persona['name']}", size=25, weight="bold")
-    sidebar_role = ft.Text(f"{core.persona['role']}", italic=True, color=ft.Colors.GREY_400)
+    # Текстовые поля сайдбара
+    sidebar_name = ft.Text(f"👁️ {core.persona.get('name', 'Unknown')}", size=25, weight="bold")
+    sidebar_role = ft.Text(f"{core.persona.get('role', 'System')}", italic=True, color=ft.Colors.GREY_400)
     
     # Чат
     chat_list = ft.ListView(expand=True, spacing=10, auto_scroll=True)
 
-    # --- Функция смены личности ---
+    # --- ЛОГИКА СМЕНЫ ЛИЧНОСТИ ---
+    
+    # 1. Сканируем папку data/profiles и ищем подпапки
+    base_dir = Path(__file__).parent
+    profiles_dir = base_dir / "profiles"
+    
+    # Получаем список названий папок (Friend, Hacker и т.д.)
+    # Проверка на существование папки, чтобы не упало при первом старте
+    if profiles_dir.exists():
+        available_profiles = [p.name for p in profiles_dir.iterdir() if p.is_dir()]
+    else:
+        available_profiles = ["Friend"] # Фолбэк
+
+    # Функция смены
     def change_persona(e):
-        selected_file = e.control.value # получаем "hacker.json" или "core_persona.json"
+        folder_name = e.control.value 
         
-        # 1. Загружаем новую личность в ядро
-        core.load_persona(selected_file)
+        # Загружаем новую личность
+        core.load_persona(folder_name)
         
-        # 2. Обновляем интерфейс
-        sidebar_name.value = f"👁️ {core.persona['name']}"
-        sidebar_role.value = f"{core.persona['role']}"
+        # Обновляем UI
+        sidebar_name.value = f"👁️ {core.persona.get('name')}"
+        sidebar_role.value = f"{core.persona.get('role')}"
         
-        # 3. Пишем системное сообщение в чат
+        # Пишем в чат о смене
         chat_list.controls.append(
-            ft.Row([
-                ft.Text(f"🔄 Система переключена в режим: {core.persona['name']}", 
-                       color=ft.Colors.GREEN_400, size=12)
-            ], alignment=ft.MainAxisAlignment.CENTER)
+            ft.Row([ft.Text(f"🔄 Загружен профиль: {folder_name}", color="green")], 
+                   alignment=ft.MainAxisAlignment.CENTER)
         )
-        
         page.update()
 
-    # Выпадающий список режимов
+    # Создаем опции для дропдауна динамически
+    dropdown_options = [ft.dropdown.Option(name) for name in available_profiles]
+
     mode_dropdown = ft.Dropdown(
-        label="Выберите режим",
+        label="Выберите профиль",
         width=230,
-        options=[
-            ft.dropdown.Option("core_persona.json", "🟢 Друг (Base)"),
-            ft.dropdown.Option("hacker.json", "🔴 Хакер (Root)"),
-        ],
-        value="core_persona.json", # Значение по умолчанию
-        on_change=change_persona,   # Какую функцию вызвать при смене
+        options=dropdown_options,
+        value="Friend", # Значение по умолчанию
+        on_change=change_persona,
         bgcolor=ft.Colors.BLUE_GREY_900,
     )
 
@@ -111,7 +121,7 @@ def main(page: ft.Page):
         chat_list.controls.append(ai_row)
         
         progress_bar.visible = True
-        status_text.value = f"🧠 {core.persona['name']} думает..."
+        status_text.value = f"🧠 {core.persona.get('name')} думает..."
         page.update()
 
         # Стриминг ответа

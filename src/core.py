@@ -1,66 +1,74 @@
 import ollama
 import json
+import yaml
 from pathlib import Path
 from src.memory import MemoryEngine
-# Импортируем наш реестр инструментов и генератор описания
-# (Убедитесь, что файл src/tools/__init__.py создан, как мы обсуждали ранее)
+
+# Импорт инструментов
 try:
     from src.tools import AVAILABLE_TOOLS, get_tools_description
 except ImportError:
-    # Заглушка, если вы еще не создали tools.py
     AVAILABLE_TOOLS = {}
     def get_tools_description(tools): return ""
 
 class EidolonCore:
-    def __init__(self, profile_name="core_persona.json"):
+    # ИЗМЕНЕНИЕ 1: Теперь принимаем profile_folder="Friend"
+    def __init__(self, profile_folder="Friend"):
         print("⚙️ Инициализация Ядра...")
-        # Вся загрузка происходит в одном месте
-        self.load_persona(profile_name)
+        self.load_persona(profile_folder)
 
-    def load_persona(self, profile_name):
-        print(f"🔄 Загрузка профиля: {profile_name}...")
+    def load_persona(self, folder_name):
+        print(f"🔄 Загрузка Персоны из папки: {folder_name}...")
         
         self.base_dir = Path(__file__).parent.parent
-        profile_path = self.base_dir / "data" / "profiles" / profile_name
+        
+        # 1. Путь к папке конкретного персонажа
+        persona_dir = self.base_dir / "profiles" / folder_name
+        
+        # 2. Ищем внутри config.yaml
+        config_path = persona_dir / "core_persona.yaml"
         
         try:
-            with open(profile_path, "r", encoding="utf-8") as f:
-                self.persona = json.load(f)
+            with open(config_path, "r", encoding="utf-8") as f:
+                self.persona = yaml.safe_load(f)
         except FileNotFoundError:
-            print(f"❌ Ошибка: Профиль {profile_name} не найден. Грузим дефолт.")
-            return
+            print(f"❌ Ошибка: Конфиг не найден в {config_path}")
+            # Аварийная заглушка
+            self.persona = {
+                "name": "Error",
+                "role": "System",
+                "system_prompt": "Error loading profile.",
+                "allowed_tools": []
+            }
 
-        # 1. Определяем Модель (Ядро)
+        # 3. Определяем Модель
         self.current_model = self.persona.get("model", "llama3.1")
         
-        # 2. Определяем Коллекцию Памяти (RAG)
-        mem_name = self.persona.get("memory_collection", "core_memory")
-        self.memory = MemoryEngine(collection_name=mem_name)
+        # 4. Инициализируем Память ВНУТРИ папки персонажа
+        # Теперь база лежит в Eidolon/data/profiles/Friend/memory_db
+        memory_path = persona_dir / "memory_db"
+        self.memory = MemoryEngine(db_path=memory_path)
 
-        # 3. Определяем Доступные Инструменты
+        # 5. Инструменты
         self.allowed_tools = self.persona.get("allowed_tools", [])
 
-        print(f"👤 Личность: {self.persona['name']}")
-        print(f"🧠 Активное ядро: {self.current_model}")
-        print(f"📚 Активная память: {mem_name}")
-        print(f"🛠️ Инструменты: {len(self.allowed_tools)} шт.")
+        print(f"👤 Личность: {self.persona.get('name')}")
+        print(f"🧠 Ядро: {self.current_model}")
+        print(f"📂 Папка данных: {persona_dir}")
 
     def chat(self, user_input):
         print(f"\n🗣️ User: {user_input}")
 
-        # --- ЭТАП 1: RAG (Память) ---
+        # 1. RAG
         found_memories = self.memory.search(user_input, limit=2)
-        if found_memories:
-            context_str = "\n".join([f"- {m}" for m in found_memories])
-        else:
-            context_str = "Нет релевантных воспоминаний."
+        context_str = "\n".join([f"- {m}" for m in found_memories]) if found_memories else "Нет данных."
 
-        # --- ЭТАП 2: Формирование Промпта с Инструментами ---
+        # 2. Промпт
         tools_instruction = get_tools_description(self.allowed_tools)
 
         system_msg = f"""
-        ТЫ: {self.persona['system_prompt']}
-        ТВОЙ ПРОФИЛЬ: Имя: {self.persona['name']}, Тон: {self.persona['tone']}
+        ТЫ: {self.persona.get('system_prompt', '')}
+        ПРОФИЛЬ: Имя: {self.persona.get('name')}, Тон: {self.persona.get('tone', 'Normal')}
         ФАКТЫ ИЗ ПАМЯТИ: 
         {context_str}
         
@@ -72,66 +80,46 @@ class EidolonCore:
             {'role': 'user', 'content': user_input},
         ]
 
-        # --- ЭТАП 3: Первый запрос (Check for Tools) ---
-        # stream=False, чтобы мы могли проверить ответ на наличие JSON
-        print(f"🦙 Анализирую запрос на {self.current_model}...")
-        response = ollama.chat(
-            model=self.current_model, 
-            messages=messages, 
-            stream=False
-        )
-        reply = response['message']['content']
+        # 3. Первый запрос (без стрима для проверки JSON)
+        print(f"🦙 Запрос к {self.current_model}...")
+        try:
+            response = ollama.chat(model=self.current_model, messages=messages, stream=False)
+            reply = response['message']['content']
+        except Exception as e:
+            yield f"Ошибка связи с Ollama: {e}"
+            return
 
-        # --- ЭТАП 4: Проверка на вызов Инструмента ---
-        # Если ответ начинается с {, значит модель хочет вызвать функцию
+        # 4. Проверка Tool Use
         if reply.strip().startswith('{') and '"tool":' in reply:
             try:
-                print(f"🔧 Вызов инструмента: {reply}")
+                print(f"🔧 Tool Call: {reply}")
                 tool_data = json.loads(reply)
                 tool_name = tool_data.get("tool")
                 tool_args = tool_data.get("args")
 
                 if tool_name in AVAILABLE_TOOLS and tool_name in self.allowed_tools:
-                    # Выполняем функцию
                     tool_func = AVAILABLE_TOOLS[tool_name]
-                    # Поддержка аргументов или без них
                     tool_result = tool_func(tool_args) if tool_args else tool_func()
-                    
-                    print(f"✅ Результат: {tool_result}")
+                    print(f"✅ Result: {tool_result}")
 
-                    # Добавляем результат в историю для ЛЛМ
                     messages.append({'role': 'assistant', 'content': reply})
-                    messages.append({'role': 'user', 'content': f"SYSTEM: Результат инструмента: {tool_result}. Теперь дай финальный ответ пользователю."})
+                    messages.append({'role': 'user', 'content': f"SYSTEM: Результат: {tool_result}. Дай ответ."})
 
-                    # Второй запрос (Финальный ответ) - уже со стримингом
-                    stream = ollama.chat(
-                        model=self.current_model, 
-                        messages=messages, 
-                        stream=True
-                    )
-                    
-                    full_final_reply = ""
+                    stream = ollama.chat(model=self.current_model, messages=messages, stream=True)
+                    full_reply = ""
                     for chunk in stream:
                         part = chunk['message']['content']
-                        full_final_reply += part
+                        full_reply += part
                         yield part
                     
-                    # Сохраняем итог в память
-                    self.memory.save(f"Q: {user_input}\nTool: {tool_name}\nA: {full_final_reply}", type="tool_chat")
+                    self.memory.save(f"Q: {user_input}\nTool: {tool_name}\nA: {full_reply}", type="tool_chat")
                     return
 
             except Exception as e:
-                print(f"❌ Ошибка инструмента: {e}")
-                # Если ошибка JSON, просто отдаем текст как есть
+                print(f"❌ Tool Error: {e}")
                 yield f"[Ошибка инструмента: {e}]"
                 return
 
-        # --- ЭТАП 5: Обычный ответ (если инструментов не было) ---
-        # Так как мы уже получили ответ в step 3 без стрима, мы его просто отдаем.
-        # (Можно переделать на стрим, но для простоты MVP пока так)
+        # 5. Обычный ответ
         yield reply
         self.memory.save(f"User: {user_input}\nEidolon: {reply}", type="chat_history")
-
-# --- ТЕСТ ---
-if __name__ == "__main__":
-    bot = EidolonCore()

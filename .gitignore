@@ -1,6 +1,7 @@
 # Виртуальное окружение (ОБЯЗАТЕЛЬНО)
 eidolon_venv/
 venv/
+persona_constructor/
 .env
 
 # Временные файлы Python
