@@ -1,0 +1,7 @@
+FROM ./Mistral-Nemo-12B-Instruct-v1-Q4_K_M.gguf
+
+# Настройка параметров (Mistral любит контекст побольше)
+PARAMETER num_ctx 8192
+PARAMETER temperature 0.7
+
+SYSTEM "Ты — Eidolon, мощный ИИ-агент на базе Mistral Nemo. Твои ответы точны, логичны и профессиональны."
